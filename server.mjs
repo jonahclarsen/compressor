@@ -81,7 +81,7 @@ function settings(f, body, preview = false) {
   const formats = { image: ['jpeg', 'webp'], video: ['vp9', 'av1', 'hevc', 'avc'], audio: ['mp3', 'opus'] };
   if (!(preview && body.format === 'original') && !formats[f.type].includes(body.format)) throw new Error('Invalid format');
   const bounded = (v, lo, hi, fallback) => { const n = Number(v ?? fallback); if (!Number.isFinite(n) || n < lo || n > hi) throw new Error('Invalid settings'); return n; };
-  const s = { format: body.format, quality: Math.round(bounded(body.quality, 1, 100, 80)), resolution: bounded(body.resolution, 5, 100, 100), bitrate: bounded(f.type === 'image' ? 256 : body.bitrate, f.type === 'video' ? 50 : 8, f.type === 'video' ? 100000 : 512, 256), seconds: bounded(body.seconds, 1, 20, f.type === 'audio' ? 8 : 2), time: bounded(body.time, 0, Math.max(0, f.duration || 0), 0) };
+  const s = { format: body.format, quality: Math.round(bounded(body.quality, 1, 100, 80)), resolution: bounded(body.resolution, 5, 100, 100), bitrate: bounded(f.type === 'image' ? 256 : body.bitrate, f.type === 'video' ? 50 : 8, f.type === 'video' ? 100000 : 512, 256), seconds: bounded(body.seconds, 1, 20, f.type === 'audio' ? 8 : 3), time: bounded(body.time, 0, Math.max(0, f.duration || 0), 0) };
   if (s.format === 'mp3' && ![32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320].includes(s.bitrate)) throw new Error('Invalid MP3 bitrate');
   return s;
 }
@@ -111,7 +111,7 @@ async function convert(f, s, preview, signal, progress) {
         const codec = { vp9: 'libvpx-vp9', av1: 'libsvtav1', hevc: 'libx265', avc: 'libx264' }[s.format];
         args.push('-map', '0:v:0', '-map', '0:a:0?', '-vf', `scale=${w}:-2`, '-pix_fmt', 'yuv420p', '-c:v', codec, '-b:v', `${s.bitrate}k`, '-threads', '2');
         if (s.format === 'vp9') args.push('-deadline', 'realtime', '-cpu-used', '6', '-row-mt', '1');
-        else if (s.format === 'av1') args.push('-preset', '10', '-svtav1-params', 'lp=2');
+        else if (s.format === 'av1') args.push('-preset', '4', '-svtav1-params', 'lp=2');
         else args.push('-preset', 'veryfast');
         if (s.format === 'hevc') args.push('-tag:v', 'hvc1', '-x265-params', 'pools=2:frame-threads=2:log-level=error');
         if (mp4) args.push('-movflags', '+faststart');

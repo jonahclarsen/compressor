@@ -178,16 +178,6 @@ small {
   padding:6px 7px;
   width:57px
 }
-.plus {
-  border:1px solid #4c5b40;
-  border-radius:7px;
-  width:33px;
-  height:33px;
-  background:#2b3525;
-  color:#c2eba1;
-  font-size:24px;
-  line-height:24px
-}
 #cards {
   display:grid;
   grid-auto-flow:column;
@@ -222,13 +212,6 @@ small {
   border:1px solid #45503c;
   border-radius:4px;
   padding:3px 5px
-}
-.remove {
-  border:0;
-  background:none;
-  color:#818a7a;
-  font-size:19px;
-  padding:0 4px
 }
 .preview {
   position:relative;
@@ -281,7 +264,7 @@ small {
   width:100%;
   height:100%;
   display:block;
-  image-rendering:pixelated
+  image-rendering:auto
 }
 .detail span {
   position:absolute;
@@ -343,6 +326,7 @@ input[type=number] {
   display:flex;
   align-items:center;
   justify-content:space-between;
+  flex-wrap:wrap;
   gap:8px
 }
 .size {
@@ -441,7 +425,7 @@ body.dragging:after {
     align-items:flex-start
   }
   #cards {
-    grid-auto-columns:85vw
+    grid-template-columns:repeat(var(--card-count,4),85vw) 34px
   }
   .eyebrow {
     display:none
@@ -524,7 +508,7 @@ body.dragging:after {
   color:#d6dfcf
 }
 #time-wrap {
-  flex:1;
+  flex:0 1 240px;
   min-width:180px
 }
 #time-wrap input {
@@ -542,17 +526,18 @@ body.dragging:after {
   display:none
 }
 #cards {
-  grid-auto-columns:minmax(260px,1fr)
+  grid-template-columns:repeat(var(--card-count,4),minmax(260px,1fr)) 34px
 }
 @media(max-width:700px) {
   #cards {
-    grid-auto-columns:85vw
+    grid-template-columns:repeat(var(--card-count,4),85vw) 34px
   }
   .detail {
     height:280px
   }
   #time-wrap {
-    flex-basis:100%
+    flex-basis:240px;
+    max-width:100%
   }
   .compare-toolbar {
     align-items:center
@@ -567,4 +552,70 @@ body.dragging:after {
 }
 .original .card-header {
   height:56px
+}
+
+.card-actions {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-left:auto
+}
+.copy-settings,.paste-settings {
+  display:grid;
+  place-items:center;
+  padding:7px;
+  width:32px;
+  height:34px
+}
+.card-actions svg {
+  width:17px;
+  height:17px
+}
+
+.plus {
+  display:grid;
+  place-items:center;
+  align-self:center;
+  width:34px;
+  height:34px;
+  padding:0;
+  border:1px solid #4c5b40;
+  border-radius:7px;
+  background:#2b3525;
+  color:#c2eba1
+}
+.plus svg {
+  width:24px;
+  height:24px
+}
+.remove {
+  border:0;
+  background:none;
+  color:#818a7a;
+  font-size:19px;
+  padding:0 4px
+}
+
+.control-value {
+  display:flex;
+  align-items:center;
+  gap:8px
+}
+.setting-lock {
+  display:grid;
+  place-items:center;
+  width:28px;
+  height:28px;
+  padding:4px;
+  flex-shrink:0
+}
+.setting-lock svg {
+  width:17px;
+  height:17px
+}
+.setting-lock[aria-pressed=true] {
+  color:#b8e88a;
+  border-color:#b8e88a;
+  background:#35452b
 }

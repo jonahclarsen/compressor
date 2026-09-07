@@ -1,5 +1,8 @@
 const $ = s => document.querySelector(s);
 const cards = [];
+const previewCache = new Map(), pendingPreviews = new Map();
+let copiedSettings;
+let locks = { bitrate: false, resolution: false };
 let file, uploadVersion = 0, revision = 0, timer, controller;
 let playing = false, running = false, loading = false, scrubbing = false, segmentStart = 0, offset = 0, audible;
 const bytes = n => n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`;
@@ -8,6 +11,61 @@ const options = entries => entries.map(([value, label]) => `<option value="${val
 const duration = () => Number($('#duration').value);
 const clipLength = () => Math.min(duration(), Math.max(.05, (file?.duration || 0) - segmentStart));
 const players = () => cards.map(c => c.media).filter(m => m?.play && m.readyState >= 1);
+const stateKey = 'compressor.state.v1';
+let sourceKey, restoring = false, restoredScroll;
+// The workspace is rebuilt asynchronously, so native history restoration runs too early.
+history.scrollRestoration = 'manual';
+function storageWarning(message) { $('#error').textContent = message; }
+function sourceStore(mode, value) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('compressor', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('source');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction('source', mode);
+      const store = transaction.objectStore('source');
+      const operation = mode === 'readonly' ? store.get('current') : store.put(value, 'current');
+      transaction.oncomplete = () => { db.close(); resolve(operation.result); };
+      transaction.onabort = transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  });
+}
+function saveState() {
+  if (!file || !sourceKey || restoring) return;
+  try {
+    localStorage.setItem(stateKey, JSON.stringify({
+      version: 1, sourceKey, cards: cards.map(c => ({ original: c.original, settings: c.settings })),
+      copiedSettings, locks, duration: duration(), segmentStart, offset, playing,
+      audible: cards.indexOf(audible), scroll: restoredScroll || { x: scrollX, y: scrollY, cards: $('#cards').scrollLeft },
+    }));
+  } catch { storageWarning('Browser storage is unavailable or full. Changes cannot be saved.'); }
+}
+async function restoreState() {
+  const version = uploadVersion;
+  try {
+    const saved = JSON.parse(localStorage.getItem(stateKey) || 'null');
+    if (!saved) return;
+    if (saved.version !== 1 || !Array.isArray(saved.cards) || !saved.cards.length ||
+        !saved.cards[0].original || saved.cards.some(c => !c.settings) ||
+        ![saved.duration, saved.segmentStart, saved.offset].every(Number.isFinite)) {
+      throw new Error('Invalid saved state');
+    }
+    const stored = await sourceStore('readonly');
+    if (version !== uploadVersion) return;
+    if (!stored?.source || stored.key !== saved.sourceKey) throw new Error('Saved source unavailable');
+    await loadFile(stored.source, saved);
+  } catch {
+    if (version === uploadVersion) storageWarning('Could not restore the saved session. Open the source file to start again.');
+  }
+}
+// Save discrete edits immediately, and checkpoint the moving playhead without writing every frame.
+for (const event of ['input', 'change', 'click']) document.addEventListener(event, () => queueMicrotask(saveState));
+window.addEventListener('pagehide', saveState);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveState(); });
+window.addEventListener('scroll', saveState, { passive: true });
+$('#cards').addEventListener('scroll', saveState, { passive: true });
+setInterval(() => { if (running) saveState(); }, 500);
 async function api(url, body, signal, method = 'POST') {
   const res = await fetch(url, { method, signal, ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'Request failed'); }
@@ -20,7 +78,7 @@ window.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; doc
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('dragleave', () => { if (--dragDepth <= 0) document.body.classList.remove('dragging'); });
 window.addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging'); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
-async function loadFile(source) {
+async function loadFile(source, saved = null) {
   const version = ++uploadVersion;
   $('#error').textContent = ''; $('#drop > span:nth-child(2)').textContent = 'Opening…';
   try {
@@ -28,32 +86,102 @@ async function loadFile(source) {
     const res = await fetch('/api/upload', { method: 'POST', body });
     const data = await res.json(); if (!res.ok) throw new Error(data.error || 'Could not open file');
     if (version !== uploadVersion) return;
+    restoring = true;
+    const key = saved?.sourceKey || crypto.randomUUID();
+    if (!saved) {
+      try { await sourceStore('readwrite', { key, source }); }
+      catch { storageWarning('Could not save the source file. This session may not reopen automatically.'); }
+      if (version !== uploadVersion) return;
+    }
+    sourceKey = key; restoredScroll = saved?.scroll;
     controller?.abort(); clearTimeout(timer); revision++; pausePlayers();
     for (const c of [...cards]) removeCard(c, false);
+    copiedSettings = null; previewCache.clear(); pendingPreviews.clear();
+    locks = { bitrate: saved?.locks?.bitrate === true, resolution: saved?.locks?.resolution === true };
     file = data; playing = false; offset = 0; segmentStart = 0; audible = null;
     $('#empty').hidden = true; $('#workspace').hidden = false;
     $('#file-name').textContent = file.name;
     $('#file-meta').textContent = [bytes(file.size), file.width ? `${file.width} × ${file.height}` : '', file.duration ? clock(file.duration) : ''].filter(Boolean).join('  ·  ');
     for (const id of ['#time-wrap', '#play', '#duration-wrap']) $(id).hidden = file.type === 'image';
     $('#time').max = Math.max(0, (file.duration || 0) - .05); $('#time').value = 0;
-    $('#duration').value = file.type === 'audio' ? 8 : 2; $('#duration-label').textContent = `${duration()} s`;
-    addCard({}, true);
-    if (file.type === 'audio') addCard({ bitrate: 256 });
-    else [0, 1, 2].forEach(i => addCard({ quality: [45, 75, 92][i], bitrate: [800, 2500, 6000][i] }));
-    updateTransport(); schedule(0);
+    $('#duration').value = file.type === 'audio' ? 8 : 3; $('#duration-label').textContent = `${duration()} s`;
+    if (saved) {
+      copiedSettings = saved.copiedSettings || null;
+      $('#duration').value = Math.max(1, Math.min(20, saved.duration));
+      $('#duration-label').textContent = `${duration()} s`;
+      segmentStart = Math.max(0, Math.min(Number($('#time').max), saved.segmentStart));
+      offset = Math.max(0, Math.min(clipLength(), saved.offset));
+      saved.cards.forEach(c => addCard(c.settings, c.original));
+      audible = cards[saved.audible] || cards[0];
+      playing = file.type !== 'image' && saved.playing === true;
+    } else {
+      addCard({}, true);
+      if (file.type === 'audio') addCard({ bitrate: 256 });
+      else [0, 1, 2].forEach(i => addCard({ quality: [45, 75, 92][i], bitrate: [800, 2500, 6000][i] }));
+    }
+    updateAudio(); updateTransport();
+    if (restoredScroll) {
+      window.scrollTo({ left: restoredScroll.x || 0, top: restoredScroll.y || 0, behavior: 'instant' });
+      $('#cards').scrollLeft = restoredScroll.cards || 0;
+      restoredScroll = null;
+    }
+    restoring = false; schedule(0);
   } catch (e) { if (version === uploadVersion) $('#error').textContent = e.message; }
-  finally { if (version === uploadVersion) $('#drop > span:nth-child(2)').textContent = 'Drop a file'; }
+  finally { if (version === uploadVersion) { restoring = false; $('#drop > span:nth-child(2)').textContent = 'Drop a file'; } }
+}
+function lockControl(key, label, slider) {
+  return `<div class="control"><div class="control-line"><span>${label}</span><span class="control-value"><output class="${key}-output"></output><button type="button" class="setting-lock secondary" data-lock="${key}" aria-label="Lock ${label.toLowerCase()} across previews" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path class="lock-shackle"/></svg></button></span></div>${slider}</div>`;
+}
+function syncSettings(c) {
+  for (const key of ['bitrate', 'resolution']) {
+    if (!locks[key]) continue;
+    if (key === 'bitrate' && c.type === 'audio') c.settings.bitrate = rates(c).reduce((a, b) => Math.abs(b - c.settings.bitrate) < Math.abs(a - c.settings.bitrate) ? b : a);
+    cards.filter(card => !card.original).forEach(card => { card.settings[key] = c.settings[key]; });
+  }
+  cards.filter(card => !card.original).forEach(card => {
+    card.element.querySelectorAll('[data-key]').forEach(input => {
+      input.value = input.dataset.key === 'bitrate' ? bitratePosition(card) : card.settings[input.dataset.key];
+    });
+    updateLabels(card);
+    card.element.querySelectorAll('[data-lock]').forEach(button => {
+      const key = button.dataset.lock, locked = locks[key];
+      button.setAttribute('aria-pressed', String(locked));
+      button.title = `${locked ? 'Unlock' : 'Lock'} ${key} across previews${locked ? '' : ' at this value'}`;
+      button.querySelector('.lock-shackle').setAttribute('d', locked ? 'M8 10V7a4 4 0 0 1 8 0v3' : 'M8 10V7a4 4 0 0 1 8 0');
+    });
+  });
 }
 function addCard(overrides = {}, original = false) {
   const type = file.type;
   const c = { file, type, original, settings: { format: original ? 'original' : type === 'image' ? 'webp' : type === 'video' ? 'vp9' : 'mp3', quality: 75, resolution: 100, bitrate: type === 'audio' ? 256 : 2500, ...overrides }, element: document.createElement('article') };
   c.element.className = `card${original ? ' original' : ''}`;
   const formats = type === 'image' ? [['webp', 'WebP'], ['jpeg', 'JPEG']] : type === 'video' ? [['vp9', 'VP9 · WebM'], ['av1', 'AV1 · WebM'], ['hevc', 'HEVC · MP4'], ['avc', 'AVC · MP4']] : [['mp3', 'MP3'], ['opus', 'Opus']];
-  c.element.innerHTML = `<div class="card-header"><strong>${original ? 'Original' : '<span class="number"></span>Preview'}</strong>${original ? '' : '<button class="remove" aria-label="Remove comparison">×</button>'}</div><div class="preview"><span class="status">Preparing…</span></div><div class="detail"><canvas></canvas><span>${type === 'audio' ? 'Waveform' : '1×'}</span></div>${original ? '' : `<div class="controls"><label class="control"><span class="control-line">Format</span><select data-key="format" aria-label="Format">${options(formats)}</select></label>${type === 'image' ? '<label class="control"><span class="control-line">Quality <output class="quality-output"></output></span><input type="range" data-key="quality" min="1" max="100" aria-label="Quality"></label>' : '<label class="control"><span class="control-line">Bitrate <output class="bitrate-output"></output></span><input data-key="bitrate" type="range" min="0" max="1000" step="1" aria-label="Bitrate"></label>'}${type !== 'audio' ? '<label class="control"><span class="control-line">Resolution <output class="resolution-output"></output></span><input type="range" data-key="resolution" min="5" max="100" step="1" aria-label="Resolution"></label>' : ''}</div>`}<p class="card-error" role="alert"></p><div class="card-bottom"><span class="size">—</span>${type === 'audio' ? '<button class="listen secondary">Listen</button>' : ''}${original ? '' : '<button class="cancel" hidden>Cancel</button><button class="export">Export ↗</button>'}</div>`;
+  c.element.innerHTML = `<div class="card-header"><strong>${original ? 'Original' : '<span class="number"></span>Preview'}</strong>${original ? '' : '<button class="remove" aria-label="Remove comparison">×</button>'}</div><div class="preview"><span class="status">Preparing…</span></div><div class="detail"><canvas></canvas><span>${type === 'audio' ? 'Waveform' : '1×'}</span></div>${original ? '' : `<div class="controls"><label class="control"><span class="control-line">Format</span><select data-key="format" aria-label="Format">${options(formats)}</select></label>${type === 'image' ? '<label class="control"><span class="control-line">Quality <output class="quality-output"></output></span><input type="range" data-key="quality" min="1" max="100" aria-label="Quality"></label>' : lockControl('bitrate', 'Bitrate', '<input data-key="bitrate" type="range" min="0" max="1000" step="1" aria-label="Bitrate">')}${type !== 'audio' ? lockControl('resolution', 'Resolution', '<input type="range" data-key="resolution" min="5" max="100" step="1" aria-label="Resolution">') : ''}</div>`}<p class="card-error" role="alert"></p><div class="card-bottom"><span class="size">—</span>${type === 'audio' ? '<button class="listen secondary">Listen</button>' : ''}${original ? '' : '<div class="card-actions"><button class="copy-settings secondary" aria-label="Copy settings" title="Copy settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg></button><button class="paste-settings secondary" aria-label="Paste settings" title="Copy settings from a preview first" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 5H5v16h14V5h-4"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M8 12h8M8 16h8"/></svg></button><button class="cancel" hidden>Cancel</button><button class="export">Export ↗</button></div>'}</div>`;
   c.find = s => c.element.querySelector(s);
   if (type !== 'audio') c.find('.preview').style.aspectRatio = `${file.width} / ${file.height}`;
   if (!original) {
+    c.element.querySelectorAll('[data-lock]').forEach(button => {
+      button.onclick = () => { locks[button.dataset.lock] = !locks[button.dataset.lock]; syncSettings(c); schedule(0); };
+    });
     c.find('.remove').onclick = () => removeCard(c);
+    c.find('.paste-settings').disabled = !copiedSettings;
+    if (copiedSettings) c.find('.paste-settings').title = 'Paste settings';
+    c.find('.copy-settings').onclick = () => {
+      copiedSettings = { ...c.settings };
+      cards.filter(card => !card.original).forEach(card => {
+        card.find('.paste-settings').disabled = false;
+        card.find('.paste-settings').title = 'Paste settings';
+        card.find('.copy-settings').title = card === c ? 'Settings copied' : 'Copy settings';
+      });
+    };
+    c.find('.paste-settings').onclick = () => {
+      if (!copiedSettings) return;
+      c.settings = { ...copiedSettings };
+      c.element.querySelectorAll('[data-key]').forEach(input => {
+        input.value = input.dataset.key === 'bitrate' ? bitratePosition(c) : c.settings[input.dataset.key];
+      });
+      syncSettings(c); schedule(0);
+    };
     c.find('.export').onclick = () => exportCard(c);
     c.find('.cancel').onclick = () => { if (c.job) api(`/api/jobs/${c.job}`, null, null, 'DELETE').catch(e => { c.find('.card-error').textContent = e.message; }); };
     c.element.querySelectorAll('[data-key]').forEach(input => {
@@ -62,17 +190,18 @@ function addCard(overrides = {}, original = false) {
         const key = input.dataset.key;
         c.settings[key] = key === 'format' ? input.value : key === 'bitrate' ? bitrateValue(c, Number(input.value)) : Number(input.value);
         if (key === 'format' && type === 'audio') { c.settings.bitrate = rates(c).reduce((a, b) => Math.abs(b - c.settings.bitrate) < Math.abs(a - c.settings.bitrate) ? b : a); c.find('[data-key="bitrate"]').value = bitratePosition(c); }
-        updateLabels(c); schedule();
+        syncSettings(c); schedule();
       });
     });
   }
   if (type === 'audio') c.find('.listen').onclick = () => { audible = c; updateAudio(); if (!playing) { playing = true; startTogether(); } };
-  cards.push(c); $('#cards').append(c.element); renumber(); updateLabels(c);
+  cards.push(c); $('#cards').insertBefore(c.element, $('#add')); renumber(); updateLabels(c);
   if (original) audible = c;
+  else syncSettings(cards.find(card => !card.original));
 }
-const rates = c => c.settings.format === 'mp3' ? [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320] : [16, 24, 32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 512];
-function bitratePosition(c) { return c.type === 'audio' ? rates(c).indexOf(c.settings.bitrate) / (rates(c).length - 1) * 1000 : Math.log(c.settings.bitrate / 50) / Math.log(2000) * 1000; }
-function bitrateValue(c, position) { return c.type === 'audio' ? rates(c)[Math.round(position / 1000 * (rates(c).length - 1))] : Math.max(50, Math.round(50 * 2000 ** (position / 1000) / 50) * 50); }
+const rates = c => locks.bitrate ? [32, 48, 64, 96, 128, 160, 192, 256, 320] : c.settings.format === 'mp3' ? [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320] : [16, 24, 32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 512];
+function bitratePosition(c) { return c.type === 'audio' ? rates(c).indexOf(c.settings.bitrate) / (rates(c).length - 1) * 1000 : Math.log(c.settings.bitrate / 100) / Math.log(1000) * 1000; }
+function bitrateValue(c, position) { return c.type === 'audio' ? rates(c)[Math.round(position / 1000 * (rates(c).length - 1))] : Math.max(100, Math.round(100 * 1000 ** (position / 1000) / 100) * 100); }
 function updateLabels(c) {
   if (c.original) return;
   if (c.type === 'image') c.find('.quality-output').textContent = c.settings.quality;
@@ -85,7 +214,13 @@ function updateLabels(c) {
     c.find('.resolution-output').textContent = `${w} × ${h}`;
   }
 }
-function renumber() { cards.filter(c => !c.original).forEach((c, i, list) => { c.find('.number').textContent = String(i + 1).padStart(2, '0'); c.find('.remove').disabled = list.length === 1; }); }
+function renumber() {
+  $('#cards').style.setProperty('--card-count', Math.max(1, cards.length));
+  cards.filter(c => !c.original).forEach((c, i, list) => {
+    c.find('.number').textContent = String(i + 1).padStart(2, '0');
+    c.find('.remove').disabled = list.length === 1;
+  });
+}
 function removeCard(c, refresh = true) {
   if (c.job) api(`/api/jobs/${c.job}`, null, null, 'DELETE').catch(() => {});
   c.media?.pause?.(); c.element.remove(); const i = cards.indexOf(c); if (i >= 0) cards.splice(i, 1);
@@ -113,7 +248,7 @@ async function startTogether() {
     await Promise.all(media.map(m => m.play()));
     if (generation !== revision || loading || scrubbing || !playing) { media.forEach(m => m.pause()); return; }
     running = true;
-  } catch { pausePlayers(); playing = false; $('#error').textContent = 'Playback unavailable'; }
+  } catch { pausePlayers(); playing = false; $('#error').textContent = 'Playback unavailable. Press Space or Play to resume.'; }
   updateTransport();
 }
 function seek(media, time) {
@@ -125,7 +260,18 @@ function seek(media, time) {
     media.addEventListener('seeked', done, { once: true }); media.currentTime = target;
   });
 }
-$('#play').onclick = () => { playing = !playing; if (playing) startTogether(); else pausePlayers(); updateTransport(); };
+function togglePlayback() {
+  if (!file || file.type === 'image') return;
+  playing = !playing;
+  if (playing) startTogether(); else pausePlayers();
+  updateTransport(); saveState();
+}
+$('#play').onclick = togglePlayback;
+for (const event of ['keydown', 'keyup']) window.addEventListener(event, e => {
+  if (e.code !== 'Space' && e.key !== ' ') return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (event === 'keydown' && !e.repeat) togglePlayback();
+}, { capture: true });
 $('#duration').oninput = () => { $('#duration-label').textContent = `${duration()} s`; offset = Math.min(offset, duration() - .05); schedule(); };
 $('#time').oninput = () => {
   scrubbing = true; pausePlayers(); const target = Number($('#time').value); $('#time-label').textContent = clock(target);
@@ -137,6 +283,7 @@ $('#time').onchange = () => {
   else { segmentStart = target; offset = 0; schedule(0); }
 };
 function schedule(delay = 250) {
+  saveState();
   clearTimeout(timer); controller?.abort(); revision++; pausePlayers(); loading = true; updateTransport();
   cards.forEach(c => { c.find('.status').textContent = 'Updating…'; });
   timer = setTimeout(() => refresh(revision), delay);
@@ -148,7 +295,8 @@ async function refresh(generation) {
     catch (e) { if (generation === revision && e.name !== 'AbortError') { c.find('.status').textContent = 'Preview failed'; c.find('.card-error').textContent = e.message; c.media?.pause?.(); c.media?.remove(); c.media = null; } }
   }));
   if (generation !== revision) return;
-  loading = false; drawAll(); updateTransport(); if (playing) await startTogether();
+  loading = false; drawAll(); updateAudio(); updateTransport();
+  if (playing) await startTogether();
 }
 function ready(media, signal) {
   return new Promise((resolve, reject) => {
@@ -160,9 +308,25 @@ function ready(media, signal) {
     if (signal.aborted) abort(); else if (media.tagName === 'IMG' ? media.complete && media.naturalWidth : media.readyState >= 3) success();
   });
 }
+async function cachedPreview(c, signal) {
+  const body = { id: c.file.id, ...c.settings, time: segmentStart, seconds: duration() };
+  const key = JSON.stringify(body);
+  if (previewCache.has(key)) return previewCache.get(key);
+  const pending = pendingPreviews.get(key);
+  if (pending && !pending.signal.aborted) return pending.promise;
+  const entry = { signal };
+  entry.promise = api('/api/preview', body, signal).then(result => {
+    if (!signal.aborted) previewCache.set(key, result);
+    return result;
+  }).finally(() => {
+    if (pendingPreviews.get(key) === entry) pendingPreviews.delete(key);
+  });
+  pendingPreviews.set(key, entry);
+  return entry.promise;
+}
 async function preview(c, generation, signal) {
   c.find('.card-error').textContent = '';
-  const result = await api('/api/preview', { id: c.file.id, ...c.settings, time: segmentStart, seconds: duration() }, signal);
+  const result = await cachedPreview(c, signal);
   if (generation !== revision) return;
   c.result = result; c.media?.pause?.(); c.media?.remove(); c.find('.wave')?.remove();
   const media = document.createElement(c.type === 'image' ? 'img' : c.type === 'video' ? 'video' : 'audio'); c.media = media;
@@ -220,7 +384,7 @@ function draw(c) {
   const originalW = Math.min(c.file.width, w / dpr), originalH = Math.min(c.file.height, h / dpr);
   const cw = originalW * sw / c.file.width, ch = originalH * sh / c.file.height;
   const dw = originalW * dpr, dh = originalH * dpr;
-  ctx.imageSmoothingEnabled = false; ctx.clearRect(0, 0, w, h); ctx.drawImage(media, (sw - cw) / 2, (sh - ch) / 2, cw, ch, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'; ctx.clearRect(0, 0, w, h); ctx.drawImage(media, (sw - cw) / 2, (sh - ch) / 2, cw, ch, (w - dw) / 2, (h - dh) / 2, dw, dh);
 }
 function drawAll() { cards.forEach(draw); }
 window.addEventListener('resize', drawAll);
@@ -260,3 +424,5 @@ async function exportCard(c) {
   } catch (e) { c.find('.card-error').textContent = e.message; }
   finally { c.job = null; button.disabled = false; button.textContent = 'Export ↗'; c.find('.cancel').hidden = true; }
 }
+
+restoreState();
