@@ -13,7 +13,7 @@ pnpm install
 pnpm dev
 ```
 
-Open the URL printed in the terminal. The server binds to `127.0.0.1` and chooses an available port using cryptographic randomness. Stop it with Ctrl+C.
+Open the URL printed in the terminal. The server binds to `127.0.0.1` and chooses an available port using cryptographic randomness on its first launch. That port is saved in the git-ignored `.compressor-port` file and reused on every restart. If it is occupied, startup reports an error instead of switching ports. Delete `.compressor-port` only if you want to choose a new random port. Stop it with Ctrl+C.
 
 The FFmpeg build needs `libvpx-vp9`, `libsvtav1`, `libx264`, `libx265`, `libmp3lame`, and `libopus` encoders. Check your installation with `ffmpeg -encoders`.
 

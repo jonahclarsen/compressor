@@ -26,7 +26,7 @@ before(async () => {
   await sharp({ create: { width: 640, height: 480, channels: 4, background: { r: 80, g: 140, b: 190, alpha: .5 } } }).png().toFile(path.join(dir, 'image.png'));
   ff(['-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '3', '-c:v', 'libx264', '-c:a', 'aac', path.join(dir, 'video.mp4')]);
   ff(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '10', path.join(dir, 'audio.wav')]);
-  server = spawn(process.execPath, ['server.mjs'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  server = spawn(process.execPath, ['server.mjs'], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, COMPRESSOR_PORT_FILE: path.join(dir, 'port') } });
   base = await new Promise((resolve, reject) => { const timeout = setTimeout(() => reject(new Error('Server startup timed out')), 15000); server.stdout.on('data', data => { const match = String(data).match(/http:\/\/127\.0\.0\.1:\d+/); if (match) { clearTimeout(timeout); resolve(match[0]); } }); server.on('error', reject); });
   image = await upload('image.png'); video = await upload('video.mp4'); audio = await upload('audio.wav');
 });

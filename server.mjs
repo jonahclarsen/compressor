@@ -1,8 +1,10 @@
+import { createServer } from 'node:http';
+import { listenOnSavedPort } from './port.mjs';
 import express from 'express';
 import multer from 'multer';
 import sharp from 'sharp';
 import { spawn } from 'node:child_process';
-import { randomInt, randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdtemp, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -165,11 +167,14 @@ app.delete('/api/jobs/:id', (req, res) => { jobs.get(req.params.id)?.controller.
 app.use((error, req, res, next) => { console.error(error.message); res.status(400).json({ error: error.message.slice(-600) }); });
 await run('ffmpeg', ['-version']);
 await run('ffprobe', ['-version']);
-function listen() {
-  const port = randomInt(10000, 60000);
-  const server = app.listen(port, '127.0.0.1', () => console.log(`Compressor: http://127.0.0.1:${port}`));
-  server.on('error', e => { if (e.code === 'EADDRINUSE') listen(); else throw e; });
+const portFile = process.env.COMPRESSOR_PORT_FILE || fileURLToPath(new URL('.compressor-port', import.meta.url));
+try {
+  const port = await listenOnSavedPort(createServer(app), portFile);
+  console.log(`Compressor: http://127.0.0.1:${port}`);
+} catch (error) {
+  console.error(error.message);
+  await rm(root, { recursive: true, force: true });
+  process.exit(1);
 }
-listen();
 async function cleanup() { for (const child of children) child.kill('SIGKILL'); await rm(root, { recursive: true, force: true }); process.exit(); }
 process.on('SIGINT', cleanup); process.on('SIGTERM', cleanup);
