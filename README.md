@@ -4,8 +4,6 @@ A small, local media converter with a browser UI. Compare the original against s
 
 ![Compressor on desktop comparing an original video with three VP9 WebM previews at different bitrates and resolutions.](docs/images/desktop-comparison.png)
 
-A six-second video made from the example image with a gentle zoom, compared using VP9 at 2,500 kbps (1476 × 828), 100 kbps (738 × 414), and 100 kbps (368 × 206). The last preview halves the second preview's resolution, rounded to even dimensions for video encoding.
-
 ## Run
 
 Install Node.js 22 or newer, pnpm, and FFmpeg with ffprobe. On macOS, install FFmpeg with `brew install ffmpeg`.
