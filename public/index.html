@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Compressor</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><a class="brand" href="/" aria-label="Compressor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM17 13v8m-4-4h8"/></svg><span>compressor</span></a></header>
+<main>
+<input type="file" id="file" hidden>
+<section id="empty"><button id="drop" class="drop"><span class="upload-icon">↥</span><span>Drop a file</span><small>or browse</small><span class="types">Image <b>·</b> Video <b>·</b> Audio</span></button></section>
+<section id="workspace" hidden>
+<div class="toolbar"><div class="file-info"><span id="file-name"></span><small id="file-meta"></small></div></div>
+<div class="compare-toolbar"><div class="left-tools"><span class="eyebrow">COMPARE</span><label id="duration-wrap" hidden><input id="duration" type="range" min="1" max="20" value="2" step="1" aria-label="Preview duration"><output id="duration-label">2 s</output></label><button id="play" class="secondary" hidden>▶ Play</button><label id="time-wrap" hidden><span id="time-label">0:00</span><input id="time" type="range" min="0" max="100" value="0" step="0.01" aria-label="Preview position"></label></div><button id="add" class="plus" aria-label="Add comparison">+</button></div>
+<div id="cards"></div>
+</section>
+<p id="error" role="alert"></p>
+</main>
+
+<script type="module" src="/app.js"></script>
+</body></html>
